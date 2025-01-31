@@ -231,7 +231,19 @@ describe('analyzeCompletion test', () => {
       title: 'starting to autocomplete labelName in aggregate modifier',
       expr: 'sum by ()',
       pos: 8, // cursor is between the bracket
-      expectedContext: [{ kind: ContextKind.LabelName }],
+      expectedContext: [{ kind: ContextKind.LabelName, metricName: '' }],
+    },
+    {
+      title: 'starting to autocomplete labelName in aggregate modifier with metric name',
+      expr: 'sum(up) by ()',
+      pos: 12, // cursor is between ()
+      expectedContext: [{ kind: ContextKind.LabelName, metricName: 'up' }],
+    },
+    {
+      title: 'starting to autocomplete labelName in aggregate modifier with metric name in front',
+      expr: 'sum by ()(up)',
+      pos: 8, // cursor is between ()
+      expectedContext: [{ kind: ContextKind.LabelName, metricName: 'up' }],
     },
     {
       title: 'continue to autocomplete labelName in aggregate modifier',
@@ -240,15 +252,27 @@ describe('analyzeCompletion test', () => {
       expectedContext: [{ kind: ContextKind.LabelName }],
     },
     {
+      title: 'continue to autocomplete QuotedLabelName in aggregate modifier',
+      expr: 'sum by ("myL")',
+      pos: 12, // cursor is between the bracket after the string myL
+      expectedContext: [{ kind: ContextKind.LabelName }],
+    },
+    {
       title: 'autocomplete labelName in a list',
       expr: 'sum by (myLabel1,)',
       pos: 17, // cursor is between the bracket after the string myLab
-      expectedContext: [{ kind: ContextKind.LabelName }],
+      expectedContext: [{ kind: ContextKind.LabelName, metricName: '' }],
     },
     {
       title: 'autocomplete labelName in a list 2',
       expr: 'sum by (myLabel1, myLab)',
       pos: 23, // cursor is between the bracket after the string myLab
+      expectedContext: [{ kind: ContextKind.LabelName }],
+    },
+    {
+      title: 'autocomplete labelName in a list 2',
+      expr: 'sum by ("myLabel1", "myLab")',
+      pos: 27, // cursor is between the bracket after the string myLab
       expectedContext: [{ kind: ContextKind.LabelName }],
     },
     {
@@ -288,6 +312,12 @@ describe('analyzeCompletion test', () => {
       expectedContext: [{ kind: ContextKind.LabelName, metricName: '' }],
     },
     {
+      title: 'continue to autocomplete quoted labelName associated to a metric',
+      expr: '{"metric_"}',
+      pos: 10, // cursor is between the bracket after the string metric_
+      expectedContext: [{ kind: ContextKind.MetricName, metricName: 'metric_' }],
+    },
+    {
       title: 'autocomplete the labelValue with metricName + labelName',
       expr: 'metric_name{labelName=""}',
       pos: 23, // cursor is between the quotes
@@ -325,6 +355,30 @@ describe('analyzeCompletion test', () => {
               name: 'labelName',
               type: Neq,
               value: '',
+            },
+          ],
+        },
+      ],
+    },
+    {
+      title: 'autocomplete the labelValue with metricName + quoted labelName',
+      expr: 'metric_name{labelName="labelValue", "labelName"!=""}',
+      pos: 50, // cursor is between the quotes
+      expectedContext: [
+        {
+          kind: ContextKind.LabelValue,
+          metricName: 'metric_name',
+          labelName: 'labelName',
+          matchers: [
+            {
+              name: 'labelName',
+              type: Neq,
+              value: '',
+            },
+            {
+              name: 'labelName',
+              type: EqlSingle,
+              value: 'labelValue',
             },
           ],
         },
@@ -414,6 +468,12 @@ describe('analyzeCompletion test', () => {
       expr: 'metric_name{labelName!}',
       pos: 22, // cursor is after '!'
       expectedContext: [{ kind: ContextKind.MatchOp }],
+    },
+    {
+      title: 'autocomplete matchOp 3',
+      expr: 'metric_name{"labelName"!}',
+      pos: 24, // cursor is after '!'
+      expectedContext: [{ kind: ContextKind.BinOp }],
     },
     {
       title: 'autocomplete duration with offset',
@@ -523,12 +583,42 @@ describe('analyzeCompletion test', () => {
       pos: 5,
       expectedContext: [{ kind: ContextKind.AtModifiers }],
     },
+    {
+      title: 'autocomplete topk params',
+      expr: 'topk()',
+      pos: 5,
+      expectedContext: [{ kind: ContextKind.Number }],
+    },
+    {
+      title: 'autocomplete topk params 2',
+      expr: 'topk(inf,)',
+      pos: 9,
+      expectedContext: [{ kind: ContextKind.MetricName, metricName: '' }, { kind: ContextKind.Function }, { kind: ContextKind.Aggregation }],
+    },
+    {
+      title: 'autocomplete topk params 3',
+      expr: 'topk(inf,r)',
+      pos: 10,
+      expectedContext: [{ kind: ContextKind.MetricName, metricName: 'r' }, { kind: ContextKind.Function }, { kind: ContextKind.Aggregation }],
+    },
+    {
+      title: 'autocomplete topk params 4',
+      expr: 'topk by(instance) ()',
+      pos: 19,
+      expectedContext: [{ kind: ContextKind.Number }],
+    },
+    {
+      title: 'autocomplete topk params 5',
+      expr: 'topk by(instance) (inf,r)',
+      pos: 24,
+      expectedContext: [{ kind: ContextKind.MetricName, metricName: 'r' }, { kind: ContextKind.Function }, { kind: ContextKind.Aggregation }],
+    },
   ];
   testCases.forEach((value) => {
     it(value.title, () => {
       const state = createEditorState(value.expr);
       const node = syntaxTree(state).resolve(value.pos, -1);
-      const result = analyzeCompletion(state, node);
+      const result = analyzeCompletion(state, node, value.pos);
       expect(value.expectedContext).toEqual(result);
     });
   });
@@ -715,7 +805,7 @@ describe('computeStartCompletePosition test', () => {
     it(value.title, () => {
       const state = createEditorState(value.expr);
       const node = syntaxTree(state).resolve(value.pos, -1);
-      const result = computeStartCompletePosition(node, value.pos);
+      const result = computeStartCompletePosition(state, node, value.pos);
       expect(value.expectedStart).toEqual(result);
     });
   });
