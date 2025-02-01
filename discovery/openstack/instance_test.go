@@ -32,6 +32,7 @@ func (s *OpenstackSDInstanceTestSuite) SetupTest(t *testing.T) {
 
 	s.Mock.HandleServerListSuccessfully()
 	s.Mock.HandleFloatingIPListSuccessfully()
+	s.Mock.HandlePortsListSuccessfully()
 
 	s.Mock.HandleVersionsSuccessfully()
 	s.Mock.HandleAuthSuccessfully()
@@ -61,18 +62,19 @@ func TestOpenstackSDInstanceRefresh(t *testing.T) {
 	tgs, err := instance.refresh(ctx)
 
 	require.NoError(t, err)
-	require.Equal(t, 1, len(tgs))
+	require.Len(t, tgs, 1)
 
 	tg := tgs[0]
 	require.NotNil(t, tg)
 	require.NotNil(t, tg.Targets)
-	require.Equal(t, 4, len(tg.Targets))
+	require.Len(t, tg.Targets, 6)
 
 	for i, lbls := range []model.LabelSet{
 		{
 			"__address__":                      model.LabelValue("10.0.0.32:0"),
 			"__meta_openstack_instance_flavor": model.LabelValue("1"),
 			"__meta_openstack_instance_id":     model.LabelValue("ef079b0c-e610-4dfb-b1aa-b49f07ac48e5"),
+			"__meta_openstack_instance_image":  model.LabelValue("f90f6034-2570-4974-8351-6b49732ef2eb"),
 			"__meta_openstack_instance_status": model.LabelValue("ACTIVE"),
 			"__meta_openstack_instance_name":   model.LabelValue("herp"),
 			"__meta_openstack_private_ip":      model.LabelValue("10.0.0.32"),
@@ -83,8 +85,9 @@ func TestOpenstackSDInstanceRefresh(t *testing.T) {
 		},
 		{
 			"__address__":                      model.LabelValue("10.0.0.31:0"),
-			"__meta_openstack_instance_flavor": model.LabelValue("1"),
+			"__meta_openstack_instance_flavor": model.LabelValue("m1.medium"),
 			"__meta_openstack_instance_id":     model.LabelValue("9e5476bd-a4ec-4653-93d6-72c93aa682ba"),
+			"__meta_openstack_instance_image":  model.LabelValue("f90f6034-2570-4974-8351-6b49732ef2eb"),
 			"__meta_openstack_instance_status": model.LabelValue("ACTIVE"),
 			"__meta_openstack_instance_name":   model.LabelValue("derp"),
 			"__meta_openstack_private_ip":      model.LabelValue("10.0.0.31"),
@@ -94,7 +97,7 @@ func TestOpenstackSDInstanceRefresh(t *testing.T) {
 		},
 		{
 			"__address__":                      model.LabelValue("10.0.0.33:0"),
-			"__meta_openstack_instance_flavor": model.LabelValue("4"),
+			"__meta_openstack_instance_flavor": model.LabelValue("m1.small"),
 			"__meta_openstack_instance_id":     model.LabelValue("9e5476bd-a4ec-4653-93d6-72c93aa682bb"),
 			"__meta_openstack_instance_status": model.LabelValue("ACTIVE"),
 			"__meta_openstack_instance_name":   model.LabelValue("merp"),
@@ -106,7 +109,7 @@ func TestOpenstackSDInstanceRefresh(t *testing.T) {
 		},
 		{
 			"__address__":                      model.LabelValue("10.0.0.34:0"),
-			"__meta_openstack_instance_flavor": model.LabelValue("4"),
+			"__meta_openstack_instance_flavor": model.LabelValue("m1.small"),
 			"__meta_openstack_instance_id":     model.LabelValue("9e5476bd-a4ec-4653-93d6-72c93aa682bb"),
 			"__meta_openstack_instance_status": model.LabelValue("ACTIVE"),
 			"__meta_openstack_instance_name":   model.LabelValue("merp"),
@@ -115,6 +118,31 @@ func TestOpenstackSDInstanceRefresh(t *testing.T) {
 			"__meta_openstack_tag_env":         model.LabelValue("prod"),
 			"__meta_openstack_public_ip":       model.LabelValue("10.10.10.4"),
 			"__meta_openstack_project_id":      model.LabelValue("fcad67a6189847c4aecfa3c81a05783b"),
+			"__meta_openstack_user_id":         model.LabelValue("9349aff8be7545ac9d2f1d00999a23cd"),
+		},
+		{
+			"__address__":                      model.LabelValue("10.0.0.33:0"),
+			"__meta_openstack_instance_flavor": model.LabelValue("m1.small"),
+			"__meta_openstack_instance_id":     model.LabelValue("87caf8ed-d92a-41f6-9dcd-d1399e39899f"),
+			"__meta_openstack_instance_status": model.LabelValue("ACTIVE"),
+			"__meta_openstack_instance_name":   model.LabelValue("merp-project2"),
+			"__meta_openstack_private_ip":      model.LabelValue("10.0.0.33"),
+			"__meta_openstack_address_pool":    model.LabelValue("private"),
+			"__meta_openstack_tag_env":         model.LabelValue("prod"),
+			"__meta_openstack_project_id":      model.LabelValue("b78fef2305934dbbbeb9a10b4c326f7a"),
+			"__meta_openstack_user_id":         model.LabelValue("9349aff8be7545ac9d2f1d00999a23cd"),
+		},
+		{
+			"__address__":                      model.LabelValue("10.0.0.34:0"),
+			"__meta_openstack_instance_flavor": model.LabelValue("m1.small"),
+			"__meta_openstack_instance_id":     model.LabelValue("87caf8ed-d92a-41f6-9dcd-d1399e39899f"),
+			"__meta_openstack_instance_status": model.LabelValue("ACTIVE"),
+			"__meta_openstack_instance_name":   model.LabelValue("merp-project2"),
+			"__meta_openstack_private_ip":      model.LabelValue("10.0.0.34"),
+			"__meta_openstack_address_pool":    model.LabelValue("private"),
+			"__meta_openstack_tag_env":         model.LabelValue("prod"),
+			"__meta_openstack_public_ip":       model.LabelValue("10.10.10.24"),
+			"__meta_openstack_project_id":      model.LabelValue("b78fef2305934dbbbeb9a10b4c326f7a"),
 			"__meta_openstack_user_id":         model.LabelValue("9349aff8be7545ac9d2f1d00999a23cd"),
 		},
 	} {
@@ -132,6 +160,5 @@ func TestOpenstackSDInstanceRefreshWithDoneContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := hypervisor.refresh(ctx)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), context.Canceled.Error(), "%q doesn't contain %q", err, context.Canceled)
+	require.ErrorContains(t, err, context.Canceled.Error(), "%q doesn't contain %q", err, context.Canceled)
 }

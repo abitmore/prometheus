@@ -15,6 +15,7 @@ package v1
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,19 +23,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-kit/log"
 	"github.com/grafana/regexp"
-	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/common/promslog"
 	"github.com/prometheus/common/route"
 	"github.com/stretchr/testify/require"
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/model/labels"
 	"github.com/prometheus/prometheus/promql"
+	"github.com/prometheus/prometheus/promql/promqltest"
 	"github.com/prometheus/prometheus/rules"
 	"github.com/prometheus/prometheus/scrape"
 	"github.com/prometheus/prometheus/storage"
+	"github.com/prometheus/prometheus/util/annotations"
 )
 
 func TestApiStatusCodes(t *testing.T) {
@@ -58,7 +60,7 @@ func TestApiStatusCodes(t *testing.T) {
 		"promql.ErrQueryCanceled": {
 			err:            promql.ErrQueryCanceled("some error"),
 			expectedString: "query was canceled",
-			expectedCode:   http.StatusServiceUnavailable,
+			expectedCode:   statusClientClosedConnection,
 		},
 
 		"promql.ErrQueryTimeout": {
@@ -76,7 +78,7 @@ func TestApiStatusCodes(t *testing.T) {
 		"context.Canceled": {
 			err:            context.Canceled,
 			expectedString: "context canceled",
-			expectedCode:   http.StatusUnprocessableEntity,
+			expectedCode:   statusClientClosedConnection,
 		},
 	} {
 		for k, q := range map[string]storage.SampleAndChunkQueryable{
@@ -85,10 +87,10 @@ func TestApiStatusCodes(t *testing.T) {
 			"error from seriesset": errorTestQueryable{q: errorTestQuerier{s: errorTestSeriesSet{err: tc.err}}},
 		} {
 			t.Run(fmt.Sprintf("%s/%s", name, k), func(t *testing.T) {
-				r := createPrometheusAPI(q)
+				r := createPrometheusAPI(t, q)
 				rec := httptest.NewRecorder()
 
-				req := httptest.NewRequest("GET", "/api/v1/query?query=up", nil)
+				req := httptest.NewRequest(http.MethodGet, "/api/v1/query?query=up", nil)
 
 				r.ServeHTTP(rec, req)
 
@@ -99,9 +101,11 @@ func TestApiStatusCodes(t *testing.T) {
 	}
 }
 
-func createPrometheusAPI(q storage.SampleAndChunkQueryable) *route.Router {
-	engine := promql.NewEngine(promql.EngineOpts{
-		Logger:             log.NewNopLogger(),
+func createPrometheusAPI(t *testing.T, q storage.SampleAndChunkQueryable) *route.Router {
+	t.Helper()
+
+	engine := promqltest.NewTestEngineWithOpts(t, promql.EngineOpts{
+		Logger:             promslog.NewNopLogger(),
 		Reg:                nil,
 		ActiveQueryTracker: nil,
 		MaxSamples:         100,
@@ -113,6 +117,7 @@ func createPrometheusAPI(q storage.SampleAndChunkQueryable) *route.Router {
 		q,
 		nil,
 		nil,
+		func(context.Context) ScrapePoolsRetriever { return &DummyScrapePoolsRetriever{} },
 		func(context.Context) TargetRetriever { return &DummyTargetRetriever{} },
 		func(context.Context) AlertmanagerRetriever { return &DummyAlertmanagerRetriever{} },
 		func() config.Config { return config.Config{} },
@@ -122,16 +127,23 @@ func createPrometheusAPI(q storage.SampleAndChunkQueryable) *route.Router {
 		nil,   // Only needed for admin APIs.
 		"",    // This is for snapshots, which is disabled when admin APIs are disabled. Hence empty.
 		false, // Disable admin APIs.
-		log.NewNopLogger(),
+		promslog.NewNopLogger(),
 		func(context.Context) RulesRetriever { return &DummyRulesRetriever{} },
 		0, 0, 0, // Remote read samples and concurrency limit.
 		false, // Not an agent.
 		regexp.MustCompile(".*"),
 		func() (RuntimeInfo, error) { return RuntimeInfo{}, errors.New("not implemented") },
 		&PrometheusVersion{},
+		nil,
+		nil,
 		prometheus.DefaultGatherer,
 		nil,
 		nil,
+		false,
+		config.RemoteWriteProtoMsgs{config.RemoteWriteProtoMsgV1, config.RemoteWriteProtoMsgV2},
+		false,
+		false,
+		false,
 	)
 
 	promRouter := route.New().WithPrefix("/api/v1")
@@ -150,11 +162,11 @@ func (t errorTestQueryable) ExemplarQuerier(ctx context.Context) (storage.Exempl
 	return nil, t.err
 }
 
-func (t errorTestQueryable) ChunkQuerier(ctx context.Context, mint, maxt int64) (storage.ChunkQuerier, error) {
+func (t errorTestQueryable) ChunkQuerier(mint, maxt int64) (storage.ChunkQuerier, error) {
 	return nil, t.err
 }
 
-func (t errorTestQueryable) Querier(ctx context.Context, mint, maxt int64) (storage.Querier, error) {
+func (t errorTestQueryable) Querier(mint, maxt int64) (storage.Querier, error) {
 	if t.q != nil {
 		return t.q, nil
 	}
@@ -166,11 +178,11 @@ type errorTestQuerier struct {
 	err error
 }
 
-func (t errorTestQuerier) LabelValues(name string, matchers ...*labels.Matcher) ([]string, storage.Warnings, error) {
+func (t errorTestQuerier) LabelValues(context.Context, string, *storage.LabelHints, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
 	return nil, nil, t.err
 }
 
-func (t errorTestQuerier) LabelNames(matchers ...*labels.Matcher) ([]string, storage.Warnings, error) {
+func (t errorTestQuerier) LabelNames(context.Context, *storage.LabelHints, ...*labels.Matcher) ([]string, annotations.Annotations, error) {
 	return nil, nil, t.err
 }
 
@@ -178,7 +190,7 @@ func (t errorTestQuerier) Close() error {
 	return nil
 }
 
-func (t errorTestQuerier) Select(sortSeries bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.SeriesSet {
+func (t errorTestQuerier) Select(_ context.Context, sortSeries bool, hints *storage.SelectHints, matchers ...*labels.Matcher) storage.SeriesSet {
 	if t.s != nil {
 		return t.s
 	}
@@ -201,8 +213,15 @@ func (t errorTestSeriesSet) Err() error {
 	return t.err
 }
 
-func (t errorTestSeriesSet) Warnings() storage.Warnings {
+func (t errorTestSeriesSet) Warnings() annotations.Annotations {
 	return nil
+}
+
+// DummyScrapePoolsRetriever implements github.com/prometheus/prometheus/web/api/v1.ScrapePoolsRetriever.
+type DummyScrapePoolsRetriever struct{}
+
+func (DummyScrapePoolsRetriever) ScrapePools() []string {
+	return []string{}
 }
 
 // DummyTargetRetriever implements github.com/prometheus/prometheus/web/api/v1.targetRetriever.
@@ -216,6 +235,11 @@ func (DummyTargetRetriever) TargetsActive() map[string][]*scrape.Target {
 // TargetsDropped implements targetRetriever.
 func (DummyTargetRetriever) TargetsDropped() map[string][]*scrape.Target {
 	return map[string][]*scrape.Target{}
+}
+
+// TargetsDroppedCounts implements targetRetriever.
+func (DummyTargetRetriever) TargetsDroppedCounts() map[string]int {
+	return nil
 }
 
 // DummyAlertmanagerRetriever implements AlertmanagerRetriever.

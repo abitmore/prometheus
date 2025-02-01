@@ -1,11 +1,13 @@
 import React, { FC, ReactNode } from 'react';
 
-import { Alert, Table } from 'reactstrap';
+import { Alert, Button, ButtonGroup, Table } from 'reactstrap';
 
 import SeriesName from './SeriesName';
-import { Metric } from '../../types/types';
+import { Metric, Histogram } from '../../types/types';
 
 import moment from 'moment';
+
+import HistogramChart from './HistogramChart';
 
 export interface DataTableProps {
   data:
@@ -24,22 +26,25 @@ export interface DataTableProps {
       }
     | {
         resultType: 'string';
-        result: string;
+        result: SampleValue;
       };
   useLocalTime: boolean;
 }
 
 interface InstantSample {
   metric: Metric;
-  value: SampleValue;
+  value?: SampleValue;
+  histogram?: SampleHistogram;
 }
 
 interface RangeSamples {
   metric: Metric;
-  values: SampleValue[];
+  values?: SampleValue[];
+  histograms?: SampleHistogram[];
 }
 
 type SampleValue = [number, string];
+type SampleHistogram = [number, Histogram];
 
 const limitSeries = <S extends InstantSample | RangeSamples>(series: S[]): S[] => {
   const maxSeries = 10000;
@@ -51,6 +56,8 @@ const limitSeries = <S extends InstantSample | RangeSamples>(series: S[]): S[] =
 };
 
 const DataTable: FC<DataTableProps> = ({ data, useLocalTime }) => {
+  const [scale, setScale] = React.useState<'linear' | 'exponential'>('exponential');
+
   if (data === null) {
     return <Alert color="light">No data queried yet</Alert>;
   }
@@ -71,7 +78,44 @@ const DataTable: FC<DataTableProps> = ({ data, useLocalTime }) => {
             <td>
               <SeriesName labels={s.metric} format={doFormat} />
             </td>
-            <td>{s.value[1]}</td>
+            <td>
+              {s.value && s.value[1]}
+              {s.histogram && (
+                <>
+                  <HistogramChart histogram={s.histogram[1]} index={index} scale={scale} />
+                  <div className="histogram-summary-wrapper">
+                    <div className="histogram-summary">
+                      <span>
+                        <strong>Total count:</strong> {s.histogram[1].count}
+                      </span>
+                      <span>
+                        <strong>Sum:</strong> {s.histogram[1].sum}
+                      </span>
+                    </div>
+                    <div className="histogram-summary">
+                      <span>x-axis scale:</span>
+                      <ButtonGroup className="stacked-input" size="sm">
+                        <Button
+                          title="Show histogram on exponential scale"
+                          onClick={() => setScale('exponential')}
+                          active={scale === 'exponential'}
+                        >
+                          Exponential
+                        </Button>
+                        <Button
+                          title="Show histogram on linear scale"
+                          onClick={() => setScale('linear')}
+                          active={scale === 'linear'}
+                        >
+                          Linear
+                        </Button>
+                      </ButtonGroup>
+                    </div>
+                  </div>
+                  {histogramTable(s.histogram[1])}
+                </>
+              )}
+            </td>
           </tr>
         );
       });
@@ -79,21 +123,36 @@ const DataTable: FC<DataTableProps> = ({ data, useLocalTime }) => {
       break;
     case 'matrix':
       rows = (limitSeries(data.result) as RangeSamples[]).map((s, seriesIdx) => {
-        const valuesAndTimes = s.values.map((v, valIdx) => {
-          const printedDatetime = moment.unix(v[0]).toISOString(useLocalTime);
-          return (
-            <React.Fragment key={valIdx}>
-              {v[1]} @{<span title={printedDatetime}>{v[0]}</span>}
-              <br />
-            </React.Fragment>
-          );
-        });
+        const valuesAndTimes = s.values
+          ? s.values.map((v, valIdx) => {
+              const printedDatetime = moment.unix(v[0]).toISOString(useLocalTime);
+              return (
+                <React.Fragment key={valIdx}>
+                  {v[1]} @{<span title={printedDatetime}>{v[0]}</span>}
+                  <br />
+                </React.Fragment>
+              );
+            })
+          : [];
+        const histogramsAndTimes = s.histograms
+          ? s.histograms.map((h, hisIdx) => {
+              const printedDatetime = moment.unix(h[0]).toISOString(useLocalTime);
+              return (
+                <React.Fragment key={-hisIdx}>
+                  {histogramTable(h[1])} @{<span title={printedDatetime}>{h[0]}</span>}
+                  <br />
+                </React.Fragment>
+              );
+            })
+          : [];
         return (
           <tr style={{ whiteSpace: 'pre' }} key={seriesIdx}>
             <td>
               <SeriesName labels={s.metric} format={doFormat} />
             </td>
-            <td>{valuesAndTimes}</td>
+            <td>
+              {valuesAndTimes} {histogramsAndTimes}
+            </td>
           </tr>
         );
       });
@@ -139,4 +198,39 @@ const DataTable: FC<DataTableProps> = ({ data, useLocalTime }) => {
   );
 };
 
+const leftDelim = (br: number): string => (br === 3 || br === 1 ? '[' : '(');
+const rightDelim = (br: number): string => (br === 3 || br === 0 ? ']' : ')');
+
+export const bucketRangeString = ([boundaryRule, leftBoundary, rightBoundary, _]: [
+  number,
+  string,
+  string,
+  string,
+]): string => {
+  return `${leftDelim(boundaryRule)}${leftBoundary} -> ${rightBoundary}${rightDelim(boundaryRule)}`;
+};
+
+export const histogramTable = (h: Histogram): ReactNode => (
+  <Table size="xs" responsive bordered>
+    <thead>
+      <tr>
+        <th style={{ textAlign: 'center' }} colSpan={2}>
+          Histogram Sample
+        </th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th>Range</th>
+        <th>Count</th>
+      </tr>
+      {h.buckets?.map((b, i) => (
+        <tr key={i}>
+          <td>{bucketRangeString(b)}</td>
+          <td>{b[3]}</td>
+        </tr>
+      ))}
+    </tbody>
+  </Table>
+);
 export default DataTable;

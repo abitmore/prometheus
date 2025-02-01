@@ -1,7 +1,7 @@
 go:
     # Whenever the Go version is updated here,
-    # .circle/config.yml should also be updated.
-    version: 1.19
+    # .github/workflows should also be updated.
+    version: 1.23
 repository:
     path: github.com/prometheus/prometheus
 build:
@@ -10,7 +10,14 @@ build:
           path: ./cmd/prometheus
         - name: promtool
           path: ./cmd/promtool
-    flags: -a -tags netgo,builtinassets
+    tags:
+        all:
+            - netgo
+            - builtinassets
+            - stringlabels
+        windows:
+            - builtinassets
+            - stringlabels
     ldflags: |
         -X github.com/prometheus/common/version.Version={{.Version}}
         -X github.com/prometheus/common/version.Revision={{.Revision}}
@@ -21,8 +28,6 @@ tarball:
     # Whenever there are new files to include in the tarball,
     # remember to make sure the new files will be generated after `make build`.
     files:
-        - consoles
-        - console_libraries
         - documentation/examples/prometheus.yml
         - LICENSE
         - NOTICE

@@ -14,6 +14,8 @@
 package relabel
 
 import (
+	"encoding/json"
+	"strconv"
 	"testing"
 
 	"github.com/prometheus/common/model"
@@ -21,6 +23,7 @@ import (
 	"gopkg.in/yaml.v2"
 
 	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/util/testutil"
 )
 
 func TestRelabel(t *testing.T) {
@@ -28,6 +31,7 @@ func TestRelabel(t *testing.T) {
 		input   labels.Labels
 		relabel []*Config
 		output  labels.Labels
+		drop    bool
 	}{
 		{
 			input: labels.FromMap(map[string]string{
@@ -101,7 +105,7 @@ func TestRelabel(t *testing.T) {
 					Action:       Replace,
 				},
 			},
-			output: nil,
+			drop: true,
 		},
 		{
 			input: labels.FromMap(map[string]string{
@@ -115,7 +119,7 @@ func TestRelabel(t *testing.T) {
 					Action:       Drop,
 				},
 			},
-			output: nil,
+			drop: true,
 		},
 		{
 			input: labels.FromMap(map[string]string{
@@ -177,7 +181,7 @@ func TestRelabel(t *testing.T) {
 					Action:       Keep,
 				},
 			},
-			output: nil,
+			drop: true,
 		},
 		{
 			input: labels.FromMap(map[string]string{
@@ -210,6 +214,25 @@ func TestRelabel(t *testing.T) {
 			},
 			output: labels.FromMap(map[string]string{
 				"a": "boo",
+			}),
+		},
+		{
+			// Blank replacement should delete the label.
+			input: labels.FromMap(map[string]string{
+				"a": "foo",
+				"f": "baz",
+			}),
+			relabel: []*Config{
+				{
+					SourceLabels: model.LabelNames{"a"},
+					Regex:        MustNewRegexp("(f).*"),
+					TargetLabel:  "$1",
+					Replacement:  "$2",
+					Action:       Replace,
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"a": "foo",
 			}),
 		},
 		{
@@ -333,7 +356,7 @@ func TestRelabel(t *testing.T) {
 		},
 		{ // invalid target_labels
 			input: labels.FromMap(map[string]string{
-				"a": "some-name-value",
+				"a": "some-name-0",
 			}),
 			relabel: []*Config{
 				{
@@ -348,18 +371,18 @@ func TestRelabel(t *testing.T) {
 					Regex:        MustNewRegexp("some-([^-]+)-([^,]+)"),
 					Action:       Replace,
 					Replacement:  "${1}",
-					TargetLabel:  "0${3}",
+					TargetLabel:  "${3}",
 				},
 				{
 					SourceLabels: model.LabelNames{"a"},
-					Regex:        MustNewRegexp("some-([^-]+)-([^,]+)"),
+					Regex:        MustNewRegexp("some-([^-]+)(-[^,]+)"),
 					Action:       Replace,
 					Replacement:  "${1}",
-					TargetLabel:  "-${3}",
+					TargetLabel:  "${3}",
 				},
 			},
 			output: labels.FromMap(map[string]string{
-				"a": "some-name-value",
+				"a": "some-name-0",
 			}),
 		},
 		{ // more complex real-life like usecase
@@ -394,6 +417,34 @@ func TestRelabel(t *testing.T) {
 				"__metrics_path__": "/secret",
 				"job":              "some-job",
 				"foo":              "bar",
+			}),
+		},
+		{ // From https://github.com/prometheus/prometheus/issues/12283
+			input: labels.FromMap(map[string]string{
+				"__meta_kubernetes_pod_container_port_name":         "foo",
+				"__meta_kubernetes_pod_annotation_XXX_metrics_port": "9091",
+			}),
+			relabel: []*Config{
+				{
+					Regex:  MustNewRegexp("^__meta_kubernetes_pod_container_port_name$"),
+					Action: LabelDrop,
+				},
+				{
+					SourceLabels: model.LabelNames{"__meta_kubernetes_pod_annotation_XXX_metrics_port"},
+					Regex:        MustNewRegexp("(.+)"),
+					Action:       Replace,
+					Replacement:  "metrics",
+					TargetLabel:  "__meta_kubernetes_pod_container_port_name",
+				},
+				{
+					SourceLabels: model.LabelNames{"__meta_kubernetes_pod_container_port_name"},
+					Regex:        MustNewRegexp("^metrics$"),
+					Action:       Keep,
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"__meta_kubernetes_pod_annotation_XXX_metrics_port": "9091",
+				"__meta_kubernetes_pod_container_port_name":         "metrics",
 			}),
 		},
 		{
@@ -451,6 +502,198 @@ func TestRelabel(t *testing.T) {
 				"foo_uppercase": "BAR123FOO",
 			}),
 		},
+		{
+			input: labels.FromMap(map[string]string{
+				"__tmp_port": "1234",
+				"__port1":    "1234",
+				"__port2":    "5678",
+			}),
+			relabel: []*Config{
+				{
+					SourceLabels: model.LabelNames{"__tmp_port"},
+					Action:       KeepEqual,
+					TargetLabel:  "__port1",
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"__tmp_port": "1234",
+				"__port1":    "1234",
+				"__port2":    "5678",
+			}),
+		},
+		{
+			input: labels.FromMap(map[string]string{
+				"__tmp_port": "1234",
+				"__port1":    "1234",
+				"__port2":    "5678",
+			}),
+			relabel: []*Config{
+				{
+					SourceLabels: model.LabelNames{"__tmp_port"},
+					Action:       DropEqual,
+					TargetLabel:  "__port1",
+				},
+			},
+			drop: true,
+		},
+		{
+			input: labels.FromMap(map[string]string{
+				"__tmp_port": "1234",
+				"__port1":    "1234",
+				"__port2":    "5678",
+			}),
+			relabel: []*Config{
+				{
+					SourceLabels: model.LabelNames{"__tmp_port"},
+					Action:       DropEqual,
+					TargetLabel:  "__port2",
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"__tmp_port": "1234",
+				"__port1":    "1234",
+				"__port2":    "5678",
+			}),
+		},
+		{
+			input: labels.FromMap(map[string]string{
+				"__tmp_port": "1234",
+				"__port1":    "1234",
+				"__port2":    "5678",
+			}),
+			relabel: []*Config{
+				{
+					SourceLabels: model.LabelNames{"__tmp_port"},
+					Action:       KeepEqual,
+					TargetLabel:  "__port2",
+				},
+			},
+			drop: true,
+		},
+		{
+			input: labels.FromMap(map[string]string{
+				"a": "line1\nline2",
+				"b": "bar",
+				"c": "baz",
+			}),
+			relabel: []*Config{
+				{
+					SourceLabels: model.LabelNames{"a"},
+					Regex:        MustNewRegexp("line1.*line2"),
+					TargetLabel:  "d",
+					Separator:    ";",
+					Replacement:  "match${1}",
+					Action:       Replace,
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"a": "line1\nline2",
+				"b": "bar",
+				"c": "baz",
+				"d": "match",
+			}),
+		},
+		{ // Replace on source label with UTF-8 characters.
+			input: labels.FromMap(map[string]string{
+				"utf-8.label": "line1\nline2",
+				"b":           "bar",
+				"c":           "baz",
+			}),
+			relabel: []*Config{
+				{
+					SourceLabels: model.LabelNames{"utf-8.label"},
+					Regex:        MustNewRegexp("line1.*line2"),
+					TargetLabel:  "d",
+					Separator:    ";",
+					Replacement:  `match${1}`,
+					Action:       Replace,
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"utf-8.label": "line1\nline2",
+				"b":           "bar",
+				"c":           "baz",
+				"d":           "match",
+			}),
+		},
+		{ // Replace targetLabel with UTF-8 characters.
+			input: labels.FromMap(map[string]string{
+				"a": "line1\nline2",
+				"b": "bar",
+				"c": "baz",
+			}),
+			relabel: []*Config{
+				{
+					SourceLabels: model.LabelNames{"a"},
+					Regex:        MustNewRegexp("line1.*line2"),
+					TargetLabel:  "utf-8.label",
+					Separator:    ";",
+					Replacement:  `match${1}`,
+					Action:       Replace,
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"a":           "line1\nline2",
+				"b":           "bar",
+				"c":           "baz",
+				"utf-8.label": "match",
+			}),
+		},
+		{ // Replace targetLabel with UTF-8 characters and $variable.
+			input: labels.FromMap(map[string]string{
+				"a": "line1\nline2",
+				"b": "bar",
+				"c": "baz",
+			}),
+			relabel: []*Config{
+				{
+					SourceLabels: model.LabelNames{"a"},
+					Regex:        MustNewRegexp("line1.*line2"),
+					TargetLabel:  "utf-8.label${1}",
+					Separator:    ";",
+					Replacement:  "match${1}",
+					Action:       Replace,
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"a":           "line1\nline2",
+				"b":           "bar",
+				"c":           "baz",
+				"utf-8.label": "match",
+			}),
+		},
+		{ // Replace targetLabel with UTF-8 characters and various $var styles.
+			input: labels.FromMap(map[string]string{
+				"a": "line1\nline2",
+				"b": "bar",
+				"c": "baz",
+			}),
+			relabel: []*Config{
+				{
+					SourceLabels: model.LabelNames{"a"},
+					Regex:        MustNewRegexp("(line1).*(?<second>line2)"),
+					TargetLabel:  "label1_${1}",
+					Separator:    ";",
+					Replacement:  "val_${second}",
+					Action:       Replace,
+				},
+				{
+					SourceLabels: model.LabelNames{"a"},
+					Regex:        MustNewRegexp("(line1).*(?<second>line2)"),
+					TargetLabel:  "label2_$1",
+					Separator:    ";",
+					Replacement:  "val_$second",
+					Action:       Replace,
+				},
+			},
+			output: labels.FromMap(map[string]string{
+				"a":            "line1\nline2",
+				"b":            "bar",
+				"c":            "baz",
+				"label1_line1": "val_line2",
+				"label2_line1": "val_line2",
+			}),
+		},
 	}
 
 	for _, test := range tests {
@@ -468,15 +711,87 @@ func TestRelabel(t *testing.T) {
 			if cfg.Replacement == "" {
 				cfg.Replacement = DefaultRelabelConfig.Replacement
 			}
+			require.NoError(t, cfg.Validate())
 		}
 
-		res := Process(test.input, test.relabel...)
-		require.Equal(t, test.output, res)
+		res, keep := Process(test.input, test.relabel...)
+		require.Equal(t, !test.drop, keep)
+		if keep {
+			testutil.RequireEqual(t, test.output, res)
+		}
 	}
 }
 
-func TestTargetLabelValidity(t *testing.T) {
+func TestRelabelValidate(t *testing.T) {
 	tests := []struct {
+		config   Config
+		expected string
+	}{
+		{
+			config:   Config{},
+			expected: `relabel action cannot be empty`,
+		},
+		{
+			config: Config{
+				Action: Replace,
+			},
+			expected: `requires 'target_label' value`,
+		},
+		{
+			config: Config{
+				Action: Lowercase,
+			},
+			expected: `requires 'target_label' value`,
+		},
+		{
+			config: Config{
+				Action:      Lowercase,
+				Replacement: DefaultRelabelConfig.Replacement,
+				TargetLabel: "${3}", // With UTF-8 naming, this is now a legal relabel rule.
+			},
+		},
+		{
+			config: Config{
+				SourceLabels: model.LabelNames{"a"},
+				Regex:        MustNewRegexp("some-([^-]+)-([^,]+)"),
+				Action:       Replace,
+				Replacement:  "${1}",
+				TargetLabel:  "${3}",
+			},
+		},
+		{
+			config: Config{
+				SourceLabels: model.LabelNames{"a"},
+				Regex:        MustNewRegexp("some-([^-]+)-([^,]+)"),
+				Action:       Replace,
+				Replacement:  "${1}",
+				TargetLabel:  "0${3}", // With UTF-8 naming this targets a valid label.
+			},
+		},
+		{
+			config: Config{
+				SourceLabels: model.LabelNames{"a"},
+				Regex:        MustNewRegexp("some-([^-]+)-([^,]+)"),
+				Action:       Replace,
+				Replacement:  "${1}",
+				TargetLabel:  "-${3}", // With UTF-8 naming this targets a valid label.
+			},
+		},
+	}
+	for i, test := range tests {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
+			err := test.config.Validate()
+			if test.expected == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, test.expected)
+			}
+		})
+	}
+}
+
+func TestTargetLabelLegacyValidity(t *testing.T) {
+	for _, test := range []struct {
 		str   string
 		valid bool
 	}{
@@ -493,11 +808,11 @@ func TestTargetLabelValidity(t *testing.T) {
 		{"$1", true},
 		{"asd$2asd", true},
 		{"-foo${1}bar-", false},
+		{"bar.foo${1}bar", false},
 		{"_${1}_", true},
 		{"foo${bar}foo", true},
-	}
-	for _, test := range tests {
-		require.Equal(t, test.valid, relabelTarget.Match([]byte(test.str)),
+	} {
+		require.Equal(t, test.valid, relabelTargetLegacy.Match([]byte(test.str)),
 			"Expected %q to be %v", test.str, test.valid)
 	}
 }
@@ -645,6 +960,34 @@ func BenchmarkRelabel(b *testing.B) {
 				"__scrape_timeout__", "10s",
 				"job", "kubernetes-pods"),
 		},
+		{
+			name: "static label pair",
+			config: `
+        - replacement: wwwwww
+          target_label: wwwwww
+        - replacement: yyyyyyyyyyyy
+          target_label: xxxxxxxxx
+        - replacement: xxxxxxxxx
+          target_label: yyyyyyyyyyyy
+        - source_labels: ["something"]
+          target_label: with_source_labels
+          replacement: value
+        - replacement: dropped
+          target_label: ${0}
+        - replacement: ${0}
+          target_label: dropped`,
+			lbls: labels.FromStrings(
+				"abcdefg01", "hijklmn1",
+				"abcdefg02", "hijklmn2",
+				"abcdefg03", "hijklmn3",
+				"abcdefg04", "hijklmn4",
+				"abcdefg05", "hijklmn5",
+				"abcdefg06", "hijklmn6",
+				"abcdefg07", "hijklmn7",
+				"abcdefg08", "hijklmn8",
+				"job", "foo",
+			),
+		},
 	}
 	for i := range tests {
 		err := yaml.UnmarshalStrict([]byte(tests[i].config), &tests[i].cfgs)
@@ -653,8 +996,102 @@ func BenchmarkRelabel(b *testing.B) {
 	for _, tt := range tests {
 		b.Run(tt.name, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				_ = Process(tt.lbls, tt.cfgs...)
+				_, _ = Process(tt.lbls, tt.cfgs...)
 			}
+		})
+	}
+}
+
+func TestConfig_UnmarshalThenMarshal(t *testing.T) {
+	tests := []struct {
+		name      string
+		inputYaml string
+	}{
+		{
+			name: "Values provided",
+			inputYaml: `source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+separator: ;
+regex: \\d+
+target_label: __meta_kubernetes_pod_container_port_number
+replacement: $1
+action: replace
+`,
+		},
+		{
+			name: "No regex provided",
+			inputYaml: `source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+separator: ;
+target_label: __meta_kubernetes_pod_container_port_number
+replacement: $1
+action: keepequal
+`,
+		},
+		{
+			name: "Default regex provided",
+			inputYaml: `source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+separator: ;
+regex: (.*)
+target_label: __meta_kubernetes_pod_container_port_number
+replacement: $1
+action: replace
+`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			unmarshalled := Config{}
+			err := yaml.Unmarshal([]byte(test.inputYaml), &unmarshalled)
+			require.NoError(t, err)
+
+			marshalled, err := yaml.Marshal(&unmarshalled)
+			require.NoError(t, err)
+
+			require.Equal(t, test.inputYaml, string(marshalled))
+		})
+	}
+}
+
+func TestRegexp_ShouldMarshalAndUnmarshalZeroValue(t *testing.T) {
+	var zero Regexp
+
+	marshalled, err := yaml.Marshal(&zero)
+	require.NoError(t, err)
+	require.Equal(t, "null\n", string(marshalled))
+
+	var unmarshalled Regexp
+	err = yaml.Unmarshal(marshalled, &unmarshalled)
+	require.NoError(t, err)
+	require.Nil(t, unmarshalled.Regexp)
+}
+
+func TestRegexp_JSONUnmarshalThenMarshal(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "Empty regex",
+			input: `{"regex":""}`,
+		},
+		{
+			name:  "string literal",
+			input: `{"regex":"foo"}`,
+		},
+		{
+			name:  "regex",
+			input: `{"regex":".*foo.*"}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var unmarshalled Config
+			err := json.Unmarshal([]byte(test.input), &unmarshalled)
+			require.NoError(t, err)
+
+			marshalled, err := json.Marshal(&unmarshalled)
+			require.NoError(t, err)
+
+			require.Equal(t, test.input, string(marshalled))
 		})
 	}
 }

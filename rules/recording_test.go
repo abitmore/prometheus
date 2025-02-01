@@ -24,62 +24,134 @@ import (
 	"github.com/prometheus/prometheus/model/timestamp"
 	"github.com/prometheus/prometheus/promql"
 	"github.com/prometheus/prometheus/promql/parser"
+	"github.com/prometheus/prometheus/promql/promqltest"
 	"github.com/prometheus/prometheus/util/teststorage"
+	"github.com/prometheus/prometheus/util/testutil"
 )
 
+var (
+	ruleEvaluationTime       = time.Unix(0, 0).UTC()
+	exprWithMetricName, _    = parser.ParseExpr(`sort(metric)`)
+	exprWithoutMetricName, _ = parser.ParseExpr(`sort(metric + metric)`)
+)
+
+var ruleEvalTestScenarios = []struct {
+	name       string
+	ruleLabels labels.Labels
+	expr       parser.Expr
+	expected   promql.Vector
+}{
+	{
+		name:       "no labels in recording rule, metric name in query result",
+		ruleLabels: labels.EmptyLabels(),
+		expr:       exprWithMetricName,
+		expected: promql.Vector{
+			promql.Sample{
+				Metric: labels.FromStrings("__name__", "test_rule", "label_a", "1", "label_b", "3"),
+				F:      1,
+				T:      timestamp.FromTime(ruleEvaluationTime),
+			},
+			promql.Sample{
+				Metric: labels.FromStrings("__name__", "test_rule", "label_a", "2", "label_b", "4"),
+				F:      10,
+				T:      timestamp.FromTime(ruleEvaluationTime),
+			},
+		},
+	},
+	{
+		name:       "only new labels in recording rule, metric name in query result",
+		ruleLabels: labels.FromStrings("extra_from_rule", "foo"),
+		expr:       exprWithMetricName,
+		expected: promql.Vector{
+			promql.Sample{
+				Metric: labels.FromStrings("__name__", "test_rule", "label_a", "1", "label_b", "3", "extra_from_rule", "foo"),
+				F:      1,
+				T:      timestamp.FromTime(ruleEvaluationTime),
+			},
+			promql.Sample{
+				Metric: labels.FromStrings("__name__", "test_rule", "label_a", "2", "label_b", "4", "extra_from_rule", "foo"),
+				F:      10,
+				T:      timestamp.FromTime(ruleEvaluationTime),
+			},
+		},
+	},
+	{
+		name:       "some replacement labels in recording rule, metric name in query result",
+		ruleLabels: labels.FromStrings("label_a", "from_rule"),
+		expr:       exprWithMetricName,
+		expected: promql.Vector{
+			promql.Sample{
+				Metric: labels.FromStrings("__name__", "test_rule", "label_a", "from_rule", "label_b", "3"),
+				F:      1,
+				T:      timestamp.FromTime(ruleEvaluationTime),
+			},
+			promql.Sample{
+				Metric: labels.FromStrings("__name__", "test_rule", "label_a", "from_rule", "label_b", "4"),
+				F:      10,
+				T:      timestamp.FromTime(ruleEvaluationTime),
+			},
+		},
+	},
+	{
+		name:       "no labels in recording rule, no metric name in query result",
+		ruleLabels: labels.EmptyLabels(),
+		expr:       exprWithoutMetricName,
+		expected: promql.Vector{
+			promql.Sample{
+				Metric: labels.FromStrings("__name__", "test_rule", "label_a", "1", "label_b", "3"),
+				F:      2,
+				T:      timestamp.FromTime(ruleEvaluationTime),
+			},
+			promql.Sample{
+				Metric: labels.FromStrings("__name__", "test_rule", "label_a", "2", "label_b", "4"),
+				F:      20,
+				T:      timestamp.FromTime(ruleEvaluationTime),
+			},
+		},
+	},
+}
+
+func setUpRuleEvalTest(t require.TestingT) *teststorage.TestStorage {
+	return promqltest.LoadedStorage(t, `
+		load 1m
+			metric{label_a="1",label_b="3"} 1
+			metric{label_a="2",label_b="4"} 10
+	`)
+}
+
 func TestRuleEval(t *testing.T) {
-	storage := teststorage.New(t)
-	defer storage.Close()
+	storage := setUpRuleEvalTest(t)
+	t.Cleanup(func() { storage.Close() })
 
-	opts := promql.EngineOpts{
-		Logger:     nil,
-		Reg:        nil,
-		MaxSamples: 10,
-		Timeout:    10 * time.Second,
-	}
-
-	engine := promql.NewEngine(opts)
-	ctx, cancelCtx := context.WithCancel(context.Background())
-	defer cancelCtx()
-
-	now := time.Now()
-
-	suite := []struct {
-		name   string
-		expr   parser.Expr
-		labels labels.Labels
-		result promql.Vector
-		err    string
-	}{
-		{
-			name:   "nolabels",
-			expr:   &parser.NumberLiteral{Val: 1},
-			labels: labels.Labels{},
-			result: promql.Vector{promql.Sample{
-				Metric: labels.FromStrings("__name__", "nolabels"),
-				Point:  promql.Point{V: 1, T: timestamp.FromTime(now)},
-			}},
-		},
-		{
-			name:   "labels",
-			expr:   &parser.NumberLiteral{Val: 1},
-			labels: labels.FromStrings("foo", "bar"),
-			result: promql.Vector{promql.Sample{
-				Metric: labels.FromStrings("__name__", "labels", "foo", "bar"),
-				Point:  promql.Point{V: 1, T: timestamp.FromTime(now)},
-			}},
-		},
-	}
-
-	for _, test := range suite {
-		rule := NewRecordingRule(test.name, test.expr, test.labels)
-		result, err := rule.Eval(ctx, now, EngineQueryFunc(engine, storage), nil, 0)
-		if test.err == "" {
+	ng := testEngine(t)
+	for _, scenario := range ruleEvalTestScenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			rule := NewRecordingRule("test_rule", scenario.expr, scenario.ruleLabels)
+			result, err := rule.Eval(context.TODO(), 0, ruleEvaluationTime, EngineQueryFunc(ng, storage), nil, 0)
 			require.NoError(t, err)
-		} else {
-			require.Equal(t, test.err, err.Error())
-		}
-		require.Equal(t, test.result, result)
+			testutil.RequireEqual(t, scenario.expected, result)
+		})
+	}
+}
+
+func BenchmarkRuleEval(b *testing.B) {
+	storage := setUpRuleEvalTest(b)
+	b.Cleanup(func() { storage.Close() })
+
+	ng := testEngine(b)
+	for _, scenario := range ruleEvalTestScenarios {
+		b.Run(scenario.name, func(b *testing.B) {
+			rule := NewRecordingRule("test_rule", scenario.expr, scenario.ruleLabels)
+
+			b.ResetTimer()
+
+			for i := 0; i < b.N; i++ {
+				_, err := rule.Eval(context.TODO(), 0, ruleEvaluationTime, EngineQueryFunc(ng, storage), nil, 0)
+				if err != nil {
+					require.NoError(b, err)
+				}
+			}
+		})
 	}
 }
 
@@ -95,7 +167,7 @@ func TestRuleEvalDuplicate(t *testing.T) {
 		Timeout:    10 * time.Second,
 	}
 
-	engine := promql.NewEngine(opts)
+	engine := promqltest.NewTestEngineWithOpts(t, opts)
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()
 
@@ -103,21 +175,18 @@ func TestRuleEvalDuplicate(t *testing.T) {
 
 	expr, _ := parser.ParseExpr(`vector(0) or label_replace(vector(0),"test","x","","")`)
 	rule := NewRecordingRule("foo", expr, labels.FromStrings("test", "test"))
-	_, err := rule.Eval(ctx, now, EngineQueryFunc(engine, storage), nil, 0)
+	_, err := rule.Eval(ctx, 0, now, EngineQueryFunc(engine, storage), nil, 0)
 	require.Error(t, err)
 	require.EqualError(t, err, "vector contains metrics with the same labelset after applying rule labels")
 }
 
 func TestRecordingRuleLimit(t *testing.T) {
-	suite, err := promql.NewTest(t, `
+	storage := promqltest.LoadedStorage(t, `
 		load 1m
 			metric{label="1"} 1
 			metric{label="2"} 1
 	`)
-	require.NoError(t, err)
-	defer suite.Close()
-
-	require.NoError(t, suite.Run())
+	t.Cleanup(func() { storage.Close() })
 
 	tests := []struct {
 		limit int
@@ -145,14 +214,73 @@ func TestRecordingRuleLimit(t *testing.T) {
 		labels.FromStrings("test", "test"),
 	)
 
+	ng := testEngine(t)
 	evalTime := time.Unix(0, 0)
 
 	for _, test := range tests {
-		_, err := rule.Eval(suite.Context(), evalTime, EngineQueryFunc(suite.QueryEngine(), suite.Storage()), nil, test.limit)
-		if err != nil {
+		switch _, err := rule.Eval(context.TODO(), 0, evalTime, EngineQueryFunc(ng, storage), nil, test.limit); {
+		case err != nil:
 			require.EqualError(t, err, test.err)
-		} else if test.err != "" {
+		case test.err != "":
 			t.Errorf("Expected error %s, got none", test.err)
 		}
 	}
+}
+
+// TestRecordingEvalWithOrigin checks that the recording rule details are passed through the context.
+func TestRecordingEvalWithOrigin(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+
+	const (
+		name  = "my-recording-rule"
+		query = `count(metric{foo="bar"})`
+	)
+
+	var (
+		detail RuleDetail
+		lbs    = labels.FromStrings("foo", "bar")
+	)
+
+	expr, err := parser.ParseExpr(query)
+	require.NoError(t, err)
+
+	rule := NewRecordingRule(name, expr, lbs)
+	_, err = rule.Eval(ctx, 0, now, func(ctx context.Context, qs string, _ time.Time) (promql.Vector, error) {
+		detail = FromOriginContext(ctx)
+		return nil, nil
+	}, nil, 0)
+
+	require.NoError(t, err)
+	require.Equal(t, detail, NewRuleDetail(rule))
+}
+
+func TestRecordingRule_SetDependentRules(t *testing.T) {
+	dependentRule := NewRecordingRule("test1", nil, labels.EmptyLabels())
+
+	rule := NewRecordingRule("1", &parser.NumberLiteral{Val: 1}, labels.EmptyLabels())
+	require.False(t, rule.NoDependentRules())
+
+	rule.SetDependentRules([]Rule{dependentRule})
+	require.False(t, rule.NoDependentRules())
+	require.Equal(t, []Rule{dependentRule}, rule.DependentRules())
+
+	rule.SetDependentRules([]Rule{})
+	require.True(t, rule.NoDependentRules())
+	require.Empty(t, rule.DependentRules())
+}
+
+func TestRecordingRule_SetDependencyRules(t *testing.T) {
+	dependencyRule := NewRecordingRule("test1", nil, labels.EmptyLabels())
+
+	rule := NewRecordingRule("1", &parser.NumberLiteral{Val: 1}, labels.EmptyLabels())
+	require.False(t, rule.NoDependencyRules())
+
+	rule.SetDependencyRules([]Rule{dependencyRule})
+	require.False(t, rule.NoDependencyRules())
+	require.Equal(t, []Rule{dependencyRule}, rule.DependencyRules())
+
+	rule.SetDependencyRules([]Rule{})
+	require.True(t, rule.NoDependencyRules())
+	require.Empty(t, rule.DependencyRules())
 }

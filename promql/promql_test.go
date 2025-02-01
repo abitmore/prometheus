@@ -11,26 +11,91 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package promql
+package promql_test
 
 import (
-	"path/filepath"
+	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
+
+	"github.com/prometheus/prometheus/promql"
+	"github.com/prometheus/prometheus/promql/parser"
+	"github.com/prometheus/prometheus/promql/promqltest"
+	"github.com/prometheus/prometheus/util/teststorage"
 )
 
+func newTestEngine(t *testing.T) *promql.Engine {
+	return promqltest.NewTestEngine(t, false, 0, promqltest.DefaultMaxSamplesPerQuery)
+}
+
 func TestEvaluations(t *testing.T) {
-	files, err := filepath.Glob("testdata/*.test")
+	promqltest.RunBuiltinTests(t, newTestEngine(t))
+}
+
+// Run a lot of queries at the same time, to check for race conditions.
+func TestConcurrentRangeQueries(t *testing.T) {
+	stor := teststorage.New(t)
+	defer stor.Close()
+	opts := promql.EngineOpts{
+		Logger:     nil,
+		Reg:        nil,
+		MaxSamples: 50000000,
+		Timeout:    100 * time.Second,
+	}
+	// Enable experimental functions testing
+	parser.EnableExperimentalFunctions = true
+	engine := promqltest.NewTestEngineWithOpts(t, opts)
+
+	const interval = 10000 // 10s interval.
+	// A day of data plus 10k steps.
+	numIntervals := 8640 + 10000
+	err := setupRangeQueryTestData(stor, engine, interval, numIntervals)
 	require.NoError(t, err)
 
-	for _, fn := range files {
-		t.Run(fn, func(t *testing.T) {
-			test, err := newTestFromFile(t, fn)
-			require.NoError(t, err)
-			require.NoError(t, test.Run())
+	cases := rangeQueryCases()
 
-			test.Close()
+	// Limit the number of queries running at the same time.
+	const numConcurrent = 4
+	sem := make(chan struct{}, numConcurrent)
+	for i := 0; i < numConcurrent; i++ {
+		sem <- struct{}{}
+	}
+	var g errgroup.Group
+	for _, c := range cases {
+		c := c
+		if strings.Contains(c.expr, "count_values") && c.steps > 10 {
+			continue // This test is too big to run with -race.
+		}
+		if strings.Contains(c.expr, "[1d]") && c.steps > 100 {
+			continue // This test is too slow.
+		}
+		<-sem
+		g.Go(func() error {
+			defer func() {
+				sem <- struct{}{}
+			}()
+			ctx := context.Background()
+			qry, err := engine.NewRangeQuery(
+				ctx, stor, nil, c.expr,
+				time.Unix(int64((numIntervals-c.steps)*10), 0),
+				time.Unix(int64(numIntervals*10), 0), time.Second*10)
+			if err != nil {
+				return err
+			}
+			res := qry.Exec(ctx)
+			if res.Err != nil {
+				t.Logf("Query: %q, steps: %d, result: %s", c.expr, c.steps, res.Err)
+				return res.Err
+			}
+			qry.Close()
+			return nil
 		})
 	}
+
+	err = g.Wait()
+	require.NoError(t, err)
 }
