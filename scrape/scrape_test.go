@@ -982,6 +982,7 @@ func newBasicScrapeLoopWithFallback(t testing.TB, ctx context.Context, scraper s
 		false,
 		false,
 		false,
+		false,
 		true,
 		nil,
 		false,
@@ -1130,6 +1131,7 @@ func TestScrapeLoopRun(t *testing.T) {
 		false,
 		false,
 		false,
+		false,
 		nil,
 		false,
 		scrapeMetrics,
@@ -1272,6 +1274,7 @@ func TestScrapeLoopMetadata(t *testing.T) {
 		nil,
 		0,
 		0,
+		false,
 		false,
 		false,
 		false,
@@ -2005,7 +2008,7 @@ func TestScrapeLoopAppendCacheEntryButErrNotFound(t *testing.T) {
 	fakeRef := storage.SeriesRef(1)
 	expValue := float64(1)
 	metric := []byte(`metric{n="1"} 1`)
-	p, warning := textparse.New(metric, "text/plain", "", false, false, labels.NewSymbolTable())
+	p, warning := textparse.New(metric, "text/plain", "", false, false, false, labels.NewSymbolTable())
 	require.NotNil(t, p)
 	require.NoError(t, warning)
 
@@ -4635,26 +4638,26 @@ metric: <
 	fals := false
 	for metricsTextName, metricsText := range metricsTexts {
 		for name, tc := range map[string]struct {
-			alwaysScrapeClassicHistograms bool
+			alwaysScrapeClassicHistograms *bool
 			convertClassicHistToNHCB      *bool
 		}{
 			"convert with scrape": {
-				alwaysScrapeClassicHistograms: true,
+				alwaysScrapeClassicHistograms: &tru,
 				convertClassicHistToNHCB:      &tru,
 			},
 			"convert without scrape": {
-				alwaysScrapeClassicHistograms: false,
+				alwaysScrapeClassicHistograms: &fals,
 				convertClassicHistToNHCB:      &tru,
 			},
 			"scrape without convert": {
-				alwaysScrapeClassicHistograms: true,
+				alwaysScrapeClassicHistograms: &tru,
 				convertClassicHistToNHCB:      &fals,
 			},
 			"scrape with nil convert": {
-				alwaysScrapeClassicHistograms: true,
+				alwaysScrapeClassicHistograms: &tru,
 			},
 			"neither scrape nor convert": {
-				alwaysScrapeClassicHistograms: false,
+				alwaysScrapeClassicHistograms: &fals,
 				convertClassicHistToNHCB:      &fals,
 			},
 		} {
@@ -4664,7 +4667,7 @@ metric: <
 				expectedNativeHistCount = 1
 				expectCustomBuckets = false
 				expectedClassicHistCount = 0
-				if metricsText.hasClassic && tc.alwaysScrapeClassicHistograms {
+				if metricsText.hasClassic && tc.alwaysScrapeClassicHistograms != nil && *tc.alwaysScrapeClassicHistograms {
 					expectedClassicHistCount = 1
 				}
 			} else if metricsText.hasClassic {
@@ -4672,11 +4675,11 @@ metric: <
 				case tc.convertClassicHistToNHCB == nil || !*tc.convertClassicHistToNHCB:
 					expectedClassicHistCount = 1
 					expectedNativeHistCount = 0
-				case tc.alwaysScrapeClassicHistograms && *tc.convertClassicHistToNHCB:
+				case tc.alwaysScrapeClassicHistograms != nil && *tc.alwaysScrapeClassicHistograms && *tc.convertClassicHistToNHCB:
 					expectedClassicHistCount = 1
 					expectedNativeHistCount = 1
 					expectCustomBuckets = true
-				case !tc.alwaysScrapeClassicHistograms && *tc.convertClassicHistToNHCB:
+				case (tc.alwaysScrapeClassicHistograms == nil || !*tc.alwaysScrapeClassicHistograms) && *tc.convertClassicHistToNHCB:
 					expectedClassicHistCount = 0
 					expectedNativeHistCount = 1
 					expectCustomBuckets = true

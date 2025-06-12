@@ -20,6 +20,8 @@ import (
 	"math"
 	"os"
 	"path"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -1008,11 +1010,8 @@ func TestMetricsUpdate(t *testing.T) {
 		var metrics int
 		for _, m := range ms {
 			s := m.GetName()
-			for _, n := range metricNames {
-				if s == n {
-					metrics += len(m.Metric)
-					break
-				}
+			if slices.Contains(metricNames, s) {
+				metrics += len(m.Metric)
 			}
 		}
 		return metrics
@@ -2549,6 +2548,17 @@ func TestLabels_FromMaps(t *testing.T) {
 	)
 
 	require.Equal(t, expected, mLabels, "unexpected labelset")
+}
+
+func TestParseFiles(t *testing.T) {
+	t.Run("good files", func(t *testing.T) {
+		err := ParseFiles([]string{filepath.Join("fixtures", "rules.y*ml")})
+		require.NoError(t, err)
+	})
+	t.Run("bad files", func(t *testing.T) {
+		err := ParseFiles([]string{filepath.Join("fixtures", "invalid_rules.y*ml")})
+		require.ErrorContains(t, err, "field unexpected_field not found in type rulefmt.Rule")
+	})
 }
 
 func TestRuleDependencyController_AnalyseRules(t *testing.T) {
